@@ -11,7 +11,7 @@
 !          abq_UEL_1D_integrationpoints(n_points, n_nodes, xi, w)  = defines integration points for 1D line integral
 !=========================== ABAQUS format user element subroutine ===================
 
-      SUBROUTINE UEL_2D(RHS,AMATRX,SVARS,ENERGY,NDOFEL,NRHS,NSVARS,
+      SUBROUTINE UEL(RHS,AMATRX,SVARS,ENERGY,NDOFEL,NRHS,NSVARS,
      1     PROPS,NPROPS,COORDS,MCRD,NNODE,U,DU,V,A,JTYPE,TIME,DTIME,
      2     KSTEP,KINC,JELEM,PARAMS,NDLOAD,JDLTYP,ADLMAG,PREDEF,NPREDF,
      3     LFLAGS,MLVARX,DDLMAG,MDLOAD,PNEWDT,JPROPS,NJPROP,PERIOD)
@@ -142,8 +142,78 @@
       if (NNODE == 9) n_points = 9             ! Quadratic rect
 
     ! Write your code for a 2D element below
+    !  write(6,*)'nnode'
+      call abq_UEL_2D_integrationpoints(n_points, NNODE, xi, w)
 
-      END SUBROUTINE UEL_2D
+      if (MLVARX<2*NNODE) then                                    ! what does this mean?
+        write(6,*) ' Error in abaqus UEL '
+        write(6,*) ' Variable MLVARX must exceed 3*NNODE'
+        write(6,*) ' MLVARX = ',MLVARX,' NNODE = ',NNODE
+        stop
+      endif
+
+      RHS(1:MLVARX,1) = 0.d0
+      AMATRX(1:NDOFEL,1:NDOFEL) = 0.d0
+
+      D = 0.d0
+      E = PROPS(1)
+      xnu = PROPS(2)
+      d44 = 0.5D0*E/(1+xnu)
+      d11 = (1.D0-xnu)*E/( (1+xnu)*(1-2.D0*xnu) )
+      d12 = xnu*E/( (1+xnu)*(1-2.D0*xnu) )
+      D(1:3,1:3) = d12
+      D(1,1) = d11
+      D(2,2) = d11
+      D(3,3) = d11
+      D(4,4) = d44
+      !D(5,5) = d44
+      !D(6,6) = d44
+
+      ENERGY(1:8) = 0.d0
+
+    !     --  Loop over integration points
+      do kint = 1, n_points
+        call abq_UEL_2D_shapefunctions(xi(1:2,kint),NNODE,N,dNdxi)      !changed
+        dxdxi = matmul(coords(1:2,1:NNODE),dNdxi(1:NNODE,1:2))          !changed
+        call abq_inverse_LU(dxdxi,dxidx,2)                              !changed
+        determinant = dxdxi(1,1)*dxdxi(2,2)- dxdxi(1,2)*dxdxi(2,1)      !a line added
+        dNdx(1:NNODE,1:2) = matmul(dNdxi(1:NNODE,1:2),dxidx)            !changed
+        B = 0.d0
+        B(1,1:2*NNODE-1:2) = dNdx(1:NNODE,1)                            !changed
+        B(2,2:2*NNODE:2) = dNdx(1:NNODE,2)                              !changed                            
+        !B(3,3:3*NNODE:3)   = dNdx(1:NNODE,3)                           !zeros
+        B(4,1:2*NNODE-1:2) = dNdx(1:NNODE,2)                            !changed
+        B(4,2:2*NNODE:2) = dNdx(1:NNODE,1)                              !changed
+       ! B(5,1:3*NNODE-2:3) = dNdx(1:NNODE,3)
+       ! B(5,3:3*NNODE:3)   = dNdx(1:NNODE,1)                           !not needed...B is 4 cross 2n
+        !B(6,2:3*NNODE-1:3) = dNdx(1:NNODE,3)
+        !B(6,3:3*NNODE:3)   = dNdx(1:NNODE,2)
+
+        strain = matmul(B(1:4,1:2*NNODE),U(1:2*NNODE))                  !changed
+     
+        stress = matmul(D,strain)                                       
+        RHS(1:2*NNODE,1) = RHS(1:2*NNODE,1)
+     1   - matmul(transpose(B(1:4,1:2*NNODE)),stress(1:4))*             !changed
+     2                                          w(kint)*determinant
+     
+        AMATRX(1:2*NNODE,1:2*NNODE) = AMATRX(1:2*NNODE,1:2*NNODE)       !changed
+     1  + matmul(transpose(B(1:4,1:2*NNODE)),matmul(D,B(1:4,1:2*NNODE)))
+     2                                             *w(kint)*determinant
+     
+        ENERGY(2) = ENERGY(2)
+     1   + 0.5D0*dot_product(stress,strain)*w(kint)*determinant           ! Store the elastic strain energy
+     
+        if (NSVARS>=n_points*4) then                                      !changed    ! Store stress at each integration point (if space was allocated to do so)
+            SVARS(4*kint-3:4*kint) = stress(1:4)                          !changed
+        endif
+      end do
+
+
+      PNEWDT = 1.d0 
+
+      return 
+
+      END SUBROUTINE UEL
 
 
 
