@@ -251,60 +251,87 @@
 !
 !     Local variables
 
-      double precision E,xnu
+!      double precision E,xnu
+      double precision G,nu,pappa, e0, pb, pt, evol, edev(6)
       integer i,j
 
       ddsdde = 0.d0
-
-      E = props(1)
-      xnu = props(2)
-
+      stress=0.d0
+      G  = props(1)
+      nu = props(2)
+      e0 = props(3)
+      pt = props(4)
+      pappa= pt*(1-2*nu)/(1+nu) *(1+e0)
+      evol =  sum(STRAN(1:3)+DSTRAN(1:3))
+      
+       edev(1:3) = STRAN(1:3)+DSTRAN(1:3) - evol/3.d0
+       edev(4:6) = 0.5d0*(STRAN(4:6)+DSTRAN(4:6))
+      
+      pb= pt/3 *(1+e0)/pappa *exp(-(1+e0)/pappa *evol) - 2*G/3      
 !    for debugging, you can use
 !      write(6,*) ' Hello '
 !    Output is then written to the .dat file
 
-      If (ndi==3 .and. nshr==1) then    ! Plane strain or axisymmetry
-         ddsdde(1,1) = 1.d0-xnu
-         ddsdde(1,2) = xnu
-         ddsdde(1,3) = xnu
-         ddsdde(2,1) = xnu
-         ddsdde(2,2) = 1.d0-xnu
-         ddsdde(2,3) = xnu
-         ddsdde(3,1) = xnu
-         ddsdde(3,2) = xnu
-         ddsdde(3,3) = 1.d0-xnu
-         ddsdde(4,4) = 0.5d0*(1.d0-2.d0*xnu)
-         ddsdde = ddsdde*E/( (1.d0+xnu)*(1.d0-2.d0*xnu) )
-      else if (ndi==2 .and. nshr==1) then   ! Plane stress
-         ddsdde(1,1) = 1.d0
-         ddsdde(1,2) = xnu
-         ddsdde(2,1) = xnu
-         ddsdde(2,2) = 1.d0
-         ddsdde(3,3) = 0.5d0*(1.d0-xnu)
-         ddsdde = ddsdde*E/( (1.d0+xnu*xnu) )
-      else ! 3D
-         ddsdde(1,1) = 1.d0-xnu
-         ddsdde(1,2) = xnu
-         ddsdde(1,3) = xnu
-         ddsdde(2,1) = xnu
-         ddsdde(2,2) = 1.d0-xnu
-         ddsdde(2,3) = xnu
-         ddsdde(3,1) = xnu
-         ddsdde(3,2) = xnu
-         ddsdde(3,3) = 1.d0-xnu
-         ddsdde(4,4) = 0.5d0*(1.d0-2.d0*xnu)
-         ddsdde(5,5) = ddsdde(4,4)
-         ddsdde(6,6) = ddsdde(4,4)
-         ddsdde = ddsdde*E/( (1.d0+xnu)*(1.d0-2.d0*xnu) )
-      endif
+      !If (ndi==3 .and. nshr==1) then    ! Plane strain or axisymmetry
+      !   ddsdde(1,1) = 1.d0-xnu
+      !   ddsdde(1,2) = xnu
+      !   ddsdde(1,3) = xnu
+      !   ddsdde(2,1) = xnu
+      !   ddsdde(2,2) = 1.d0-xnu
+      !   ddsdde(2,3) = xnu
+      !   ddsdde(3,1) = xnu
+      !   ddsdde(3,2) = xnu
+      !   ddsdde(3,3) = 1.d0-xnu
+      !   ddsdde(4,4) = 0.5d0*(1.d0-2.d0*xnu)
+      !   ddsdde = ddsdde*E/( (1.d0+xnu)*(1.d0-2.d0*xnu) )
+      !else if (ndi==2 .and. nshr==1) then   ! Plane stress
+      !   ddsdde(1,1) = 1.d0
+      !   ddsdde(1,2) = xnu
+      !   ddsdde(2,1) = xnu
+      !   ddsdde(2,2) = 1.d0
+      !   ddsdde(3,3) = 0.5d0*(1.d0-xnu)
+      !   ddsdde = ddsdde*E/( (1.d0+xnu*xnu) )
+      !else ! 3D
+      !   ddsdde(1,1) = 1.d0-xnu
+      !   ddsdde(1,2) = xnu
+      !   ddsdde(1,3) = xnu
+      !   ddsdde(2,1) = xnu
+      !   ddsdde(2,2) = 1.d0-xnu
+      !   ddsdde(2,3) = xnu
+      !   ddsdde(3,1) = xnu
+      !   ddsdde(3,2) = xnu
+      !   ddsdde(3,3) = 1.d0-xnu
+      !   ddsdde(4,4) = 0.5d0*(1.d0-2.d0*xnu)
+      !   ddsdde(5,5) = ddsdde(4,4)
+      !   ddsdde(6,6) = ddsdde(4,4)
+      !   ddsdde = ddsdde*E/( (1.d0+xnu)*(1.d0-2.d0*xnu) )
+      !endif
 !
+      ddsdde(1,1) = 2*G + pb
+      ddsdde(1,2) = pb
+      ddsdde(1,3) = pb
+      ddsdde(2,1) = pb
+      ddsdde(2,2) = 2*G + pb
+      ddsdde(2,3) = pb
+      ddsdde(3,1) = pb
+      ddsdde(3,2) = pb
+      ddsdde(3,3) = 2*G + pb
+      ddsdde(4,4) = G
+      ddsdde(5,5) = G
+      ddsdde(6,6) = G
+      
+      
 !     NOTE: ABAQUS uses engineering shear strains,
 !     i.e. stran(ndi+1) = 2*e_12, etc...
-      do i = 1,ntens
-      do j = 1,ntens
-         stress(i) = stress(i) + ddsdde(i,j)*dstran(j)
-      end do
-      end do
+!      do i = 1,ntens
+!      do j = 1,ntens
+!         stress(i) = stress(i) + ddsdde(i,j)*dstran(j)
+         
+         stress(1:3)=2*G*edev(1:3)+pt/3 * (1- exp(-(1+e0)/pappa *evol))
+         stress(4:6)=2*G*edev(4:6)
+         
+!      end do
+!      end do
 
       RETURN
       END subroutine UMAT
