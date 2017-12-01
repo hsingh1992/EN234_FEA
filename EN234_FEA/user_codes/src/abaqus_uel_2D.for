@@ -92,10 +92,248 @@
     !       PERIOD                      Time period of the current step
     !
     !
-      
-      !  Local Variables
+     
+    !  Local Variables
       integer      :: i,j,n_points,kint, nfacenodes, ipoin, ksize
       integer      :: face_node_list(3)                       ! List of nodes on an element face
+    !
+      double precision  ::  xi(2,9)                          ! Area integration points
+      double precision  ::  w(9)                             ! Area integration weights
+      double precision  ::  N(9)                             ! 2D shape functions
+      double precision  ::  dNdxi(9,2),dNdxi0(9,2)                        ! 2D shape function derivatives
+      double precision  ::  dNdx(9,2)                        ! Spatial derivatives
+      double precision  ::  dxdxi(2,2), dxdxi0(2,2)                       ! Derivative of spatial coords wrt normalized coords
+    
+    !   Variables below are for computing integrals over element faces
+      double precision  ::  face_coords(2,3)                  ! Coords of nodes on an element face
+      double precision  ::  xi1(6)                            ! 1D integration points
+      double precision  ::  w1(6)                              ! Integration weights
+      double precision  ::  N1(3)                             ! 1D shape functions
+      double precision  ::  dN1dxi(3)                         ! 1D shape function derivatives
+      double precision  ::  norm(2)                           ! Normal to an element face
+      double precision  ::  dxdxi1(2)                         ! Derivative of 1D spatial coord wrt normalized areal coord
+    !
+      double precision  ::  strain(3),Ehat(2)                         ! Strain vector contains [e11, e22, e33, 2e12, 2e13, 2e23]
+      double precision  ::  stress(2)                         ! Stress vector contains [s11, s22, s33, s12, s13, s23]
+      double precision  ::  D(2,2)                            ! stress = D*(strain)  (NOTE FACTOR OF 2 in shear strain)
+      double precision  ::  B(4,22)                           ! strain = B*(dof_total)
+      double precision  ::  ktemp(22,22)                      ! Temporary stiffness (for incompatible mode elements)
+      double precision  ::  rhs_temp(22)                      ! Temporary RHS vector (for incompatible mode elements)
+      double precision  ::  kuu(18,18)                        ! Upper diagonal stiffness
+      double precision  ::  kaa(4,4),kaainv(4,4)              ! Lower diagonal stiffness
+      double precision  ::  kau(4,18)                         ! Lower quadrant of stiffness
+      double precision  ::  kua(18,4)                         ! Upper quadrant of stiffness
+      double precision  ::  alpha(4)                          ! Internal DOF for incompatible mode element
+      double precision  ::  dxidx(2,2), determinant           ! Jacobian inverse and determinant
+      double precision  ::  E, xnu, width, h, L,Fa,shear,M          ! Material properties
+      double precision  ::  det0, center(2,1)                 ! determinant at xi=0, center denotes {xi1=0,xi2=0}
+      double precision  ::  BigU(8,1),R(2,3),T(8,6),x6(2)   
+      double precision  ::  m1(2),m2(2),x1(2),x2(2),x3(2),x4(2),x5(2)
+      double precision  ::  coords_new(2,4), ehat1(2), ehat2(2),NNODEE
+    !     Example ABAQUS UEL implementing 2D linear elastic elements
+    !     Includes option for incompatible mode elements
+    !     El props are:
+    
+    !     PROPS(1)         Young's modulus
+    !     PROPS(2)         Poisson's ratio
+    
+    
+      if (NNODE == 3) n_points = 1              ! Linear triangle
+      if (NNODE == 4) n_points = 4               ! Linear rectangle
+      if (NNODE == 6) n_points = 4              ! Quadratic triangle
+      if (NNODE == 8) n_points = 9               ! Serendipity rectangle
+      if (NNODE == 9) n_points = 9             ! Quadratic rect
+    
+    ! Write your code for a 2D element below
+    !  write(6,*)'nnode'
+   !   call abq_UEL_2D_integrationpoints(n_points, NNODE, xi, w)      !check
+    
+      call abq_UEL_1D_integrationpoints(5, NNODE, xi1, w1)
+      xi=0.d0                                  
+   !  xi(1,1:5) = 0                            !Integration points are defined aloing the line xi1=0
+      xi(2,1:5) = xi1(1:5)
+      
+      if (MLVARX<2*NNODE) then                                    
+        write(6,*) ' Error in abaqus UEL '
+        write(6,*) ' Variable MLVARX must exceed 3*NNODE'
+        write(6,*) ' MLVARX = ',MLVARX,' NNODE = ',NNODE
+        stop
+      endif
+    
+      RHS(1:MLVARX,1) = 0.d0
+      AMATRX(1:NDOFEL,1:NDOFEL) = 0.d0
+    !  ktemp(1:22,1:22)=0.d0
+    !!  rhs_temp(1:22)=0.d0
+    !!  alpha(1:4)=0.d0                                     !Initializing the local variables
+    !!  kuu(1:18,1:18)=0.d0
+    !!  kua(1:18,1:4)=0.d0
+    !!  kau(1:4,1:18)=0.d0
+    !!  kaa(1:4,1:4)=0.d0
+    !!  ru(1:2*NNODE,1)=0.d0
+    !!  ra(1:4,1)=0.d0
+    !!  
+      Fa=0.d0
+      shear=0.d0
+      M=0.d0
+      
+      D = 0.d0
+      h = PROPS(1)
+      width= PROPS(2)
+      L=sqrt((coords(1,1)-coords(1,2))**2 +(coords(2,1)-coords(2,2))**2)
+      E=PROPS(3)
+      xnu=PROPS(4)
+      
+      G=E/(2*(1+xnu))
+      
+      D(1,1)=E
+      D(2,2)=G      !D is 2 cross 2
+      !xnu = PROPS(2)
+      !d44 = 0.5D0*E/(1+xnu)
+      !d11 = (1.D0-xnu)*E/( (1+xnu)*(1-2.D0*xnu) )
+      !d12 = xnu*E/( (1+xnu)*(1-2.D0*xnu) )
+      !D(1:3,1:3) = d12
+      !D(1,1) = d11
+      !D(2,2) = d11
+      !D(3,3) = d11
+      !D(4,4) = d44
+      !D(5,5) = d44
+      !D(6,6) = d44
+    !!  
+    !!  ENERGY(1:8) = 0.d0
+    !!  BigU (1:22,1) = 0.d0
+    !!  det0=0.d0
+    !!  center(1:2,1)=0.d0
+    !!!     --  Loop over integration 
+   
+    !!  
+      x5(1:2) = coords(1:2,1)
+      x6(1:2) = coords(1:2,2)
+      
+      m1(1:2)=(x6(1:2)-x5(1:2))/sqrt((x6(1)-x5(1))**2 + 
+     1                                           (x6(2)-x5(2))**2)     ! define x6, x5
+      
+      m2(1) = -m1(2)
+      m2(2) = m1(1)
+      
+      x1(1:2) = x5(1:2) - h/2 *m2(1:2)   
+      x4(1:2) = x5(1:2) + h/2 *m2(1:2)
+      x2(1:2) = x6(1:2) - h/2 *m2(1:2)
+      x3(1:2) = x6(1:2) + h/2 *m2(1:2)
+      
+      T=0.d0                                   !initialize
+      T(1,1)=1
+      T(1,3)=x5(2)-x1(2)
+      T(2,2)=1
+      T(2,3)=-(x5(1)-x1(1))
+      T(3,4)=1
+      T(3,6)=x6(2)-x2(2)
+      
+      T(4,5)=1
+      T(4,6)=x6(1)-x2(1)
+      T(5,4)=1
+      T(5,6)=x6(2)-x3(2)
+      T(6,5)=1
+      T(6,6)=x6(1)-x3(1)
+      
+      T(7,1)=1
+      T(7,3)=x5(2)-x4(2)
+      T(8,2)=1
+      T(8,3)=-(x5(1)-x4(1))
+      
+      BigU(1:8,1)=matmul(T(1:8,1:6),U)
+      NNODEE=4
+    !  n_points=5
+      coords_new(1:2,1) = x1                     !declare
+      coords_new(1:2,2) = x2
+      coords_new(1:2,3) = x3
+      coords_new(1:2,4) = x4
+      
+      
+      do kint = 1, 5
+        call abq_UEL_2D_shapefunctions(xi(1:2,kint),4,N,dNdxi)      !changed  !Should dNdxi be calculated along xi1=0  !shows error if typed NNODEE
+        dxdxi = matmul(coords_new(1:2,1:NNODEE),dNdxi(1:NNODEE,1:2))          !changed
+        call abq_inverse_LU(dxdxi,dxidx,2)                              !changed
+        
+        determinant = dxdxi(1,1)*dxdxi(2,2)- dxdxi(1,2)*dxdxi(2,1)      
+        dNdx(1:NNODEE,1:2) = matmul(dNdxi(1:NNODEE,1:2),dxidx)          
+        
+        B = 0.d0
+        B(1,1:2*NNODEE-1:2) = dNdx(1:NNODEE,1)                          
+        B(2,2:2*NNODEE:2) = dNdx(1:NNODEE,2)                                                         
+        !B(3,3:3*NNODE:3)   = dNdx(1:NNODE,3)                           !zeros
+        B(3,1:2*NNODEE-1:2) = dNdx(1:NNODEE,2)                            
+        B(3,2:2*NNODEE:2) = dNdx(1:NNODEE,1)                              ! 
+       ! B(5,1:3*NNODE-2:3) = dNdx(1:NNODE,3)
+       ! B(5,3:3*NNODE:3)   = dNdx(1:NNODE,1)                           
+        !B(6,2:3*NNODE-1:3) = dNdx(1:NNODE,3)
+        !B(6,3:3*NNODE:3)   = dNdx(1:NNODE,2)
+    
+        strain = matmul(B(1:3,1:2*NNODEE),BigU(1:2*NNODEE,1))               ! [E11, E22, 2E12]   
+     
+        !!! define laminar coordinates !!!!!
+        ehat1(1:2) = dxdxi (1:2,1)/sqrt(dxdxi(1,1)**2+dxdxi(2,1)**2)         !initialize
+        ehat2(1:2) = dxdxi (1:2,2)/sqrt(dxdxi(1,2)**2+dxdxi(2,2)**2)            !check row or column
+        
+        
+        ! define transformation matrix
+        R=0.d0                                                      !initialize R(2,3)
+           
+        R(1,1)=ehat1(1)**2
+        R(1,2)=ehat1(2)**2
+        R(1,3)=ehat1(1)*ehat1(2)
+        R(2,1)=2*ehat1(1)*ehat2(1)
+        R(2,2)=2*ehat1(2)*ehat2(2)
+        R(2,3)=ehat1(1)*ehat2(2)+ehat1(2)*ehat2(1)
+        
+        Ehat=matmul(R,strain)                                      !intialize
+        
+        
+       stress = matmul(D,Ehat)                                     ! check, 2cross1  
+       
+      
+       RHS(1:6,1) = RHS(1:6,1)
+     1 -width*L*h/2* matmul(transpose(matmul(R,matmul(B(1:3,1:2*NNODEE)           
+     2                  ,T))),stress(1:2))*  w1(kint)                     !use 1 d integraion scheme
+     
+        AMATRX(1:6,1:6) = AMATRX(1:6,1:6)       
+     1  +width*L*h/2 *matmul(transpose(matmul(R,matmul(B(1:3,1:2*NNODEE)   ! define dimensions
+     2            ,T))),matmul(D,matmul(R,matmul(B(1:3,1:2*NNODEE),T))))   
+     3                  *w1(kint)                                       ! use 1 d intergration scheme
+    
+          Fa=Fa+ width*h/2*stress(1)*w1(kint)
+          shear = shear + width*h/2*stress(2)*w1(kint)
+          M = M + width/4 *h**2 *stress(1)*xi(2,kint)*w1(kint)
+          
+        
+    !! 
+    !!    ENERGY(2) = ENERGY(2)
+    !! 1   + 0.5D0*dot_product(stress,strain)*w(kint)*determinant           ! Store the elastic strain energy
+    !! 
+        ! if (NSVARS>=n_points*4) then                                    ! Store stress at each integration point (if space was allocated to do so)
+    !!        SVARS(4*kint-3:4*kint) = stress(1:4)                  
+          !SVARS(3*kint-2)= Fa
+          !SVARS(3*kint-2+1)= shear
+          !SVARS(3*kint)  = M
+          !   
+         !endif
+         
+          !
+      end do 
+      
+      
+          SVARS(1)= Fa
+          SVARS(2)= shear
+          SVARS(3)  = M
+      end subroutine UEL
+      
+      
+      
+      
+    !  Homework 8
+      
+      !  Local Variables
+   !   integer      :: i,j,n_points,kint, nfacenodes, ipoin, ksize
+   !   integer      :: face_node_list(3)                       ! List of nodes on an element face
     !
     !  double precision  ::  xi(2,9)                          ! Area integration points
     !  double precision  ::  w(9)                             ! Area integration weights
@@ -130,227 +368,227 @@
     !  double precision  ::  BigU(22,1)   
     !  double precision  ::  ru(18,1), ra(4,1)
       !
-      
-      double precision  ::  xi(2,9)                          ! Area integration points
-      double precision  ::  w(9)                             ! Area integration weights
-      double precision  ::  N(9)                             ! 2D shape functions
-      double precision  ::  dNdxi(9,2)                       ! 2D shape function derivatives
-      double precision  ::  dNdx(9,2)                        ! Spatial derivatives
-      double precision  ::  Nbar(9)
-      double precision  ::  dNbardxi(9,2)
-      double precision  ::  dNbardx(9,2)
-      double precision  ::  dxdxi(2,2)                       ! Derivative of spatial coords wrt normalized coords
-
-      double precision  ::  sol(9), dsol(9)                   ! Sol vector contains [mu, c, dmudx1, dmudx2, dcdx1, dcdx2]
-      double precision  ::  q(9)                              ! q vector defined in class
-      double precision  ::  D(9,9),De(3,3),Etot(4),DD(4,4)                    ! D matrix defined in class
-      double precision  ::  B(9,24)             ! p = B*U
-      double precision  ::  dxidx(2,2), determinant           ! Jacobian inverse and determinant
-      double precision  ::  diffusion_coeft,kappa,theta       ! Material properties
-      double precision  ::  c,Dsum,Omega,Wcap,stress(4)                               ! concentration
-
-      
-      
-      
-      
-      
-      
-    !     Example ABAQUS UEL implementing 2D linear elastic elements
-    !     Includes option for incompatible mode elements
-    !     El props are:
-    
-    !     PROPS(1)         Young's modulus
-    !     PROPS(2)         Poisson's ratio
-    
-    
-      if (NNODE == 3) n_points = 1              ! Linear triangle
-      if (NNODE == 4) n_points = 4               ! Linear rectangle
-      if (NNODE == 6) n_points = 4              ! Quadratic triangle
-      if (NNODE == 8) n_points = 9               ! Serendipity rectangle
-      if (NNODE == 9) n_points = 9             ! Quadratic rect
-    
-    ! Write your code for a 2D element below
-    !  write(6,*)'nnode'
-      
-      n_points=4
-   
-      call abq_UEL_2D_integrationpoints(n_points, NNODE, xi, w)
-    
-      if (MLVARX<2*NNODE) then                                    
-        write(6,*) ' Error in abaqus UEL '
-        write(6,*) ' Variable MLVARX must exceed 3*NNODE'
-        write(6,*) ' MLVARX = ',MLVARX,' NNODE = ',NNODE
-        stop
-      endif
-    
-      RHS(1:MLVARX,1) = 0.d0
-      AMATRX(1:NDOFEL,1:NDOFEL) = 0.d0
-     
-      !ktemp(1:22,1:22)=0.d0
-      !rhs_temp(1:22)=0.d0
-      !alpha(1:4)=0.d0                                     !Initializing the local variables
-      !kuu(1:18,1:18)=0.d0
-      !kua(1:18,1:4)=0.d0
-      !kau(1:4,1:18)=0.d0
-      !kaa(1:4,1:4)=0.d0
-      !ru(1:2*NNODE,1)=0.d0
-      !ra(1:4,1)=0.d0
-      DD=0.d0
-      De = 0.d0
-      E = PROPS(1)
-      xnu = PROPS(2)
-      Omega=PROPS(3)
-      Wcap =PROPS(4) 
-      kappa=PROPS(5)
-      diffusion_coeft=PROPS(6)
-      theta=PROPS(7)
-      
-      stress=0.d0
-      
-      d44 = 0.5D0*E/(1+xnu)
-      d11 = (1.D0-xnu)*E/( (1+xnu)*(1-2.D0*xnu) )
-      d12 = xnu*E/( (1+xnu)*(1-2.D0*xnu) )
-      De(1:2,1:2) = d12
-      DD(1:3,1:3) = d12
-      DD(1,1)=d11                                     ! 4 cross 4 plain strain D matrix
-      DD(2,2)=d11
-      DD(3,3)=d11
-      DD(4,4)=d44
-      De(1,1) = d11
-      De(2,2) = d11
-      De(3,3) = d44
-      !D(4,4) = d44
-      !D(5,5) = d44
-      !D(6,6) = d44
-      !Dsum= (5.d0-2*xnu)*E/( 2*(1+xnu)*(1-2.D0*xnu) )
-       Dsum= DD(1,1)+DD(1,2)+DD(1,3)+DD(2,1)+DD(2,2)+DD(2,3)+DD(3,1)
-     2         +DD(3,2)+DD(3,3)
-      ENERGY(1:8) = 0.d0
-  !    BigU (1:22,1) = 0.d0
-  !    det0=0.d0
-  !    center(1:2,1)=0.d0
-    !     --  Loop over integration 
-      !if(JTYPE==1) then              !Conventional elements
-      
-    
-      
-      do kint = 1, n_points
-        call abq_UEL_2D_shapefunctions(xi(1:2,kint),NNODE,N,dNdxi)     
-        call abq_UEL_2D_shapefunctions(xi(1:2,kint),4,Nbar,dNbardxi)    !check???
-        
-        
-        dxdxi = matmul(coords(1:2,1:NNODE),dNdxi(1:NNODE,1:2))          
-        call abq_inverse_LU(dxdxi,dxidx,2)                              
-        determinant = dxdxi(1,1)*dxdxi(2,2)- dxdxi(1,2)*dxdxi(2,1)      
-        dNdx(1:NNODE,1:2) = matmul(dNdxi(1:NNODE,1:2),dxidx)            
-        dNbardx(1:4,1:2) = matmul(dNbardxi(1:4,1:2),dxidx)              !Should dxidx change???
-        
-        B = 0.d0
-       ! B(1,1:2*NNODE-1:2) = dNdx(1:NNODE,1)                          
-       ! B(2,2:2*NNODE:2) = dNdx(1:NNODE,2)                                                         
-       ! !B(3,3:3*NNODE:3)   = dNdx(1:NNODE,3)                           !zeros
-       ! B(4,1:2*NNODE-1:2) = dNdx(1:NNODE,2)                            
-       ! B(4,2:2*NNODE:2) = dNdx(1:NNODE,1)                              
-       !! B(5,1:3*NNODE-2:3) = dNdx(1:NNODE,3)
-       !! B(5,3:3*NNODE:3)   = dNdx(1:NNODE,1)                           
-       ! !B(6,2:3*NNODE-1:3) = dNdx(1:NNODE,3)
-       ! !B(6,3:3*NNODE:3)   = dNdx(1:NNODE,2)
-    
-        
-        B(1,1:16-3:4) = dNdx(1:4,1)
-        B(2,2:16-2:4) = dNdx(1:4,2)
-        B(3,1:16-3:4) = dNdx(1:4,2)
-        B(3,2:16-2:4) = dNdx(1:4,1)
-        B(4,3:16-1:4) = Nbar(1:4)                 ! Linear Quadilateral????
-        B(5,4:16:4) = Nbar(1:4)                      !check initialization???
-        B(6,3:16-1:4) = dNbardx(1:4,1)
-        B(7,3:16-1:4) = dNbardx(1:4,2)
-        B(8,4:16:4) = dNbardx(1:4,1)
-        B(9,4:16:4) = dNbardx(1:4,2)                   ! B matrix is defined 
-        
-        B(1,17:23:2) = dNdx(5:8,1)
-        B(2,18:24:2) = dNdx(5:8,2)
-        B(3,17:23:2) = dNdx(5:8,2)
-        B(3,18:24:2) = dNdx(5:8,1)
-        
-        sol(1:9) = matmul(B(1:9,1:24),U(1:24))                   !Check???                  
-        c=sol(5);                                                ! Used later
-        
-        dsol(1:9) = matmul(B(1:9,1:24),DU(1:24,1))
-        Etot(1)=sol(1)-c*Omega/3
-        Etot(2)=sol(2)-c*Omega/3
-        Etot(3)=-c*Omega/3
-        Etot(4)=sol(3)
-        
-        stress(1:3) = matmul(DD(1:3,1:3),Etot(1:3)) 
-      !  stress(1)=stress(1)-xnu*E/( (1+xnu)*(1-2.D0*xnu) ) *c*Omega/3
-       ! stress(2)=stress(2)-xnu*E/( (1+xnu)*(1-2.D0*xnu) )* c*Omega/3
-        !stress(1)=stress(1)-xnu*c*Omega/3
-        
-        !Etot(4) = -c*Omega/3     
-               !is it at the end of the step?? c+delta(c)
-      
-       ! stress(4) = E /( (1+xnu)*(1-2.D0*xnu) ) *(xnu*(Etot(1)           !sigma33
-     1  !      ) + xnu*(Etot(2)) -(1-xnu)*c*Omega/3)
-        
-      stress(4)=DD(4,4)*Etot(4)  
-      
-        !Define D matrix here
-        D=0.d0
-        D(1:3,1:3)=De
-        D(1,5)=-Omega*(DD(1,1)+DD(1,2)+DD(1,3))/3
-        D(2,5)=-Omega*(DD(2,1)+DD(2,2)+DD(2,3))/3
-        
-        D(4,1)=D(1,5)
-        D(4,2)=D(2,5)
-        D(4,4)=1.d0
-        D(4,5)= -Wcap*(12*(c)**(2.d0) -12*c + 2.d0)             ! sol or sol+dsol???
-     1                              + Omega**(2.d0) *Dsum/9   !check????
-        D(5,5)=1/DTIME
-        D(6,8)=-kappa
-        
-        D(7,9)=-kappa
-        D(8,6)=theta*diffusion_coeft     !define
-        D(9,7)=D(8,6)
-        
-        
-        ! define q vector
-        q=0.d0
-        
-        q(1)=stress(1)
-        q(2)=stress(2)
-        q(3)=stress(4)
-        
-        q(4) = sol(4) - 2*Wcap*c*(c-1.d0)*(2*c-1)-Omega/3 *(stress(1)   !check??
-     1                                        +stress(2)+stress(3))
-        q(5) = dsol(5)/DTIME
-        q(6) = -kappa*sol(8)
-        q(7) = -kappa*sol(9)
-        q(8) = diffusion_coeft*(sol(6)+(theta-1.d0)*dsol(6))
-        q(9) = diffusion_coeft*(sol(7)+(theta-1.d0)*dsol(7))
-
-      
-        
-        
-        
-        RHS(1:24,1) = RHS(1:24,1)
-     1   - matmul(transpose(B(1:9,1:24)),q(1:9))*                      !Check??
-     2                                          w(kint)*determinant
-     
-        AMATRX(1:24,1:24) = AMATRX(1:24,1:24)                          !Check??
-     1  + matmul(transpose(B(1:9,1:24)),matmul(D,B(1:9,1:24)))
-     2                                             *w(kint)*determinant
-       
-     !!   ENERGY(2) = ENERGY(2)
-     !!1   + 0.5D0*dot_product(stress,strain)*w(kint)*determinant           ! Store the elastic strain energy
-     !!
-        if (NSVARS>=n_points*4) then                                    ! Store stress at each integration point (if space was allocated to do so)
-            SVARS(4*(kint-1)+1:4*kint) = stress(1:4)                  
-        endif
-      end do
-      !endif
-      
-      END SUBROUTINE UEL
+  !!    
+  !!    double precision  ::  xi(2,9)                          ! Area integration points
+  !!    double precision  ::  w(9)                             ! Area integration weights
+  !!    double precision  ::  N(9)                             ! 2D shape functions
+  !!    double precision  ::  dNdxi(9,2)                       ! 2D shape function derivatives
+  !!    double precision  ::  dNdx(9,2)                        ! Spatial derivatives
+  !!    double precision  ::  Nbar(9)
+  !!    double precision  ::  dNbardxi(9,2)
+  !!    double precision  ::  dNbardx(9,2)
+  !!    double precision  ::  dxdxi(2,2)                       ! Derivative of spatial coords wrt normalized coords
+  !!
+  !!    double precision  ::  sol(9), dsol(9)                   ! Sol vector contains [mu, c, dmudx1, dmudx2, dcdx1, dcdx2]
+  !!    double precision  ::  q(9)                              ! q vector defined in class
+  !!    double precision  ::  D(9,9),De(3,3),Etot(4),DD(4,4)                    ! D matrix defined in class
+  !!    double precision  ::  B(9,24)             ! p = B*U
+  !!    double precision  ::  dxidx(2,2), determinant           ! Jacobian inverse and determinant
+  !!    double precision  ::  diffusion_coeft,kappa,theta       ! Material properties
+  !!    double precision  ::  c,Dsum,Omega,Wcap,stress(4)                               ! concentration
+  !!
+  !!    
+  !!    
+  !!    
+  !!    
+  !!    
+  !!    
+  !!  !     Example ABAQUS UEL implementing 2D linear elastic elements
+  !!  !     Includes option for incompatible mode elements
+  !!  !     El props are:
+  !!  
+  !!  !     PROPS(1)         Young's modulus
+  !!  !     PROPS(2)         Poisson's ratio
+  !!  
+  !!  
+  !!    if (NNODE == 3) n_points = 1              ! Linear triangle
+  !!    if (NNODE == 4) n_points = 4               ! Linear rectangle
+  !!    if (NNODE == 6) n_points = 4              ! Quadratic triangle
+  !!    if (NNODE == 8) n_points = 9               ! Serendipity rectangle
+  !!    if (NNODE == 9) n_points = 9             ! Quadratic rect
+  !!  
+  !!  ! Write your code for a 2D element below
+  !!  !  write(6,*)'nnode'
+  !!    
+  !!    n_points=4
+  !! 
+  !!    call abq_UEL_2D_integrationpoints(n_points, NNODE, xi, w)
+  !!  
+  !!    if (MLVARX<2*NNODE) then                                    
+  !!      write(6,*) ' Error in abaqus UEL '
+  !!      write(6,*) ' Variable MLVARX must exceed 3*NNODE'
+  !!      write(6,*) ' MLVARX = ',MLVARX,' NNODE = ',NNODE
+  !!      stop
+  !!    endif
+  !!  
+  !!    RHS(1:MLVARX,1) = 0.d0
+  !!    AMATRX(1:NDOFEL,1:NDOFEL) = 0.d0
+  !!   
+  !!    !ktemp(1:22,1:22)=0.d0
+  !!    !rhs_temp(1:22)=0.d0
+  !!    !alpha(1:4)=0.d0                                     !Initializing the local variables
+  !!    !kuu(1:18,1:18)=0.d0
+  !!    !kua(1:18,1:4)=0.d0
+  !!    !kau(1:4,1:18)=0.d0
+  !!    !kaa(1:4,1:4)=0.d0
+  !!    !ru(1:2*NNODE,1)=0.d0
+  !!    !ra(1:4,1)=0.d0
+  !!    DD=0.d0
+  !!    De = 0.d0
+  !!    E = PROPS(1)
+  !!    xnu = PROPS(2)
+  !!    Omega=PROPS(3)
+  !!    Wcap =PROPS(4) 
+  !!    kappa=PROPS(5)
+  !!    diffusion_coeft=PROPS(6)
+  !!    theta=PROPS(7)
+  !!    
+  !!    stress=0.d0
+  !!    
+  !!    d44 = 0.5D0*E/(1+xnu)
+  !!    d11 = (1.D0-xnu)*E/( (1+xnu)*(1-2.D0*xnu) )
+  !!    d12 = xnu*E/( (1+xnu)*(1-2.D0*xnu) )
+  !!    De(1:2,1:2) = d12
+  !!    DD(1:3,1:3) = d12
+  !!    DD(1,1)=d11                                     ! 4 cross 4 plain strain D matrix
+  !!    DD(2,2)=d11
+  !!    DD(3,3)=d11
+  !!    DD(4,4)=d44
+  !!    De(1,1) = d11
+  !!    De(2,2) = d11
+  !!    De(3,3) = d44
+  !!    !D(4,4) = d44
+  !!    !D(5,5) = d44
+  !!    !D(6,6) = d44
+  !!    !Dsum= (5.d0-2*xnu)*E/( 2*(1+xnu)*(1-2.D0*xnu) )
+  !!     Dsum= DD(1,1)+DD(1,2)+DD(1,3)+DD(2,1)+DD(2,2)+DD(2,3)+DD(3,1)
+  !!   2         +DD(3,2)+DD(3,3)
+  !!    ENERGY(1:8) = 0.d0
+  !!!    BigU (1:22,1) = 0.d0
+  !!!    det0=0.d0
+  !!!    center(1:2,1)=0.d0
+  !!  !     --  Loop over integration 
+  !!    !if(JTYPE==1) then              !Conventional elements
+  !!    
+  !!  
+  !!    
+  !!    do kint = 1, n_points
+  !!      call abq_UEL_2D_shapefunctions(xi(1:2,kint),NNODE,N,dNdxi)     
+  !!      call abq_UEL_2D_shapefunctions(xi(1:2,kint),4,Nbar,dNbardxi)    !check???
+  !!      
+  !!      
+  !!      dxdxi = matmul(coords(1:2,1:NNODE),dNdxi(1:NNODE,1:2))          
+  !!      call abq_inverse_LU(dxdxi,dxidx,2)                              
+  !!      determinant = dxdxi(1,1)*dxdxi(2,2)- dxdxi(1,2)*dxdxi(2,1)      
+  !!      dNdx(1:NNODE,1:2) = matmul(dNdxi(1:NNODE,1:2),dxidx)            
+  !!      dNbardx(1:4,1:2) = matmul(dNbardxi(1:4,1:2),dxidx)              !Should dxidx change???
+  !!      
+  !!      B = 0.d0
+  !!     ! B(1,1:2*NNODE-1:2) = dNdx(1:NNODE,1)                          
+  !!     ! B(2,2:2*NNODE:2) = dNdx(1:NNODE,2)                                                         
+  !!     ! !B(3,3:3*NNODE:3)   = dNdx(1:NNODE,3)                           !zeros
+  !!     ! B(4,1:2*NNODE-1:2) = dNdx(1:NNODE,2)                            
+  !!     ! B(4,2:2*NNODE:2) = dNdx(1:NNODE,1)                              
+  !!     !! B(5,1:3*NNODE-2:3) = dNdx(1:NNODE,3)
+  !!     !! B(5,3:3*NNODE:3)   = dNdx(1:NNODE,1)                           
+  !!     ! !B(6,2:3*NNODE-1:3) = dNdx(1:NNODE,3)
+  !!     ! !B(6,3:3*NNODE:3)   = dNdx(1:NNODE,2)
+  !!  
+  !!      
+  !!      B(1,1:16-3:4) = dNdx(1:4,1)
+  !!      B(2,2:16-2:4) = dNdx(1:4,2)
+  !!      B(3,1:16-3:4) = dNdx(1:4,2)
+  !!      B(3,2:16-2:4) = dNdx(1:4,1)
+  !!      B(4,3:16-1:4) = Nbar(1:4)                 ! Linear Quadilateral????
+  !!      B(5,4:16:4) = Nbar(1:4)                      !check initialization???
+  !!      B(6,3:16-1:4) = dNbardx(1:4,1)
+  !!      B(7,3:16-1:4) = dNbardx(1:4,2)
+  !!      B(8,4:16:4) = dNbardx(1:4,1)
+  !!      B(9,4:16:4) = dNbardx(1:4,2)                   ! B matrix is defined 
+  !!      
+  !!      B(1,17:23:2) = dNdx(5:8,1)
+  !!      B(2,18:24:2) = dNdx(5:8,2)
+  !!      B(3,17:23:2) = dNdx(5:8,2)
+  !!      B(3,18:24:2) = dNdx(5:8,1)
+  !!      
+  !!      sol(1:9) = matmul(B(1:9,1:24),U(1:24))                   !Check???                  
+  !!      c=sol(5);                                                ! Used later
+  !!      
+  !!      dsol(1:9) = matmul(B(1:9,1:24),DU(1:24,1))
+  !!      Etot(1)=sol(1)-c*Omega/3
+  !!      Etot(2)=sol(2)-c*Omega/3
+  !!      Etot(3)=-c*Omega/3
+  !!      Etot(4)=sol(3)
+  !!      
+  !!      stress(1:3) = matmul(DD(1:3,1:3),Etot(1:3)) 
+  !!    !  stress(1)=stress(1)-xnu*E/( (1+xnu)*(1-2.D0*xnu) ) *c*Omega/3
+  !!     ! stress(2)=stress(2)-xnu*E/( (1+xnu)*(1-2.D0*xnu) )* c*Omega/3
+  !!      !stress(1)=stress(1)-xnu*c*Omega/3
+  !!      
+  !!      !Etot(4) = -c*Omega/3     
+  !!             !is it at the end of the step?? c+delta(c)
+  !!    
+  !!     ! stress(4) = E /( (1+xnu)*(1-2.D0*xnu) ) *(xnu*(Etot(1)           !sigma33
+  !!   1  !      ) + xnu*(Etot(2)) -(1-xnu)*c*Omega/3)
+  !!      
+  !!    stress(4)=DD(4,4)*Etot(4)  
+  !!    
+  !!      !Define D matrix here
+  !!      D=0.d0
+  !!      D(1:3,1:3)=De
+  !!      D(1,5)=-Omega*(DD(1,1)+DD(1,2)+DD(1,3))/3
+  !!      D(2,5)=-Omega*(DD(2,1)+DD(2,2)+DD(2,3))/3
+  !!      
+  !!      D(4,1)=D(1,5)
+  !!      D(4,2)=D(2,5)
+  !!      D(4,4)=1.d0
+  !!      D(4,5)= -Wcap*(12*(c)**(2.d0) -12*c + 2.d0)             ! sol or sol+dsol???
+  !!   1                              + Omega**(2.d0) *Dsum/9   !check????
+  !!      D(5,5)=1/DTIME
+  !!      D(6,8)=-kappa
+  !!      
+  !!      D(7,9)=-kappa
+  !!      D(8,6)=theta*diffusion_coeft     !define
+  !!      D(9,7)=D(8,6)
+  !!      
+  !!      
+  !!      ! define q vector
+  !!      q=0.d0
+  !!      
+  !!      q(1)=stress(1)
+  !!      q(2)=stress(2)
+  !!      q(3)=stress(4)
+  !!      
+  !!      q(4) = sol(4) - 2*Wcap*c*(c-1.d0)*(2*c-1)-Omega/3 *(stress(1)   !check??
+  !!   1                                        +stress(2)+stress(3))
+  !!      q(5) = dsol(5)/DTIME
+  !!      q(6) = -kappa*sol(8)
+  !!      q(7) = -kappa*sol(9)
+  !!      q(8) = diffusion_coeft*(sol(6)+(theta-1.d0)*dsol(6))
+  !!      q(9) = diffusion_coeft*(sol(7)+(theta-1.d0)*dsol(7))
+  !!
+  !!    
+  !!      
+  !!      
+  !!      
+  !!      RHS(1:24,1) = RHS(1:24,1)
+  !!   1   - matmul(transpose(B(1:9,1:24)),q(1:9))*                      !Check??
+  !!   2                                          w(kint)*determinant
+  !!   
+  !!      AMATRX(1:24,1:24) = AMATRX(1:24,1:24)                          !Check??
+  !!   1  + matmul(transpose(B(1:9,1:24)),matmul(D,B(1:9,1:24)))
+  !!   2                                             *w(kint)*determinant
+  !!     
+  !!   !!   ENERGY(2) = ENERGY(2)
+  !!   !!1   + 0.5D0*dot_product(stress,strain)*w(kint)*determinant           ! Store the elastic strain energy
+  !!   !!
+  !!      if (NSVARS>=n_points*4) then                                    ! Store stress at each integration point (if space was allocated to do so)
+  !!          SVARS(4*(kint-1)+1:4*kint) = stress(1:4)                  
+  !!      endif
+  !!    end do
+  !!    !endif
+  !!    
+  !!    END SUBROUTINE UEL
       
       
       !Homwork 7
